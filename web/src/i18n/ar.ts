@@ -50,8 +50,8 @@ export const ar = defineLocale({
   },
 
   app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
+    brand: "Matika Agent",
+    brandShort: "MA",
     closeNavigation: "إغلاق التنقل",
     closeModelTools: "إغلاق النموذج والأدوات",
     footer: {

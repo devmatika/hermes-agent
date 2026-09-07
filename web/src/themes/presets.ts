@@ -38,10 +38,55 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 // Themes
 // ---------------------------------------------------------------------------
 
+/**
+ * Matika / Lisa light brand — cool near-white canvas, ink text, blue→teal
+ * accents (aligned with 2nd_brain_matika `web/src/index.css` tokens).
+ * This is the dashboard default on this fork.
+ */
 export const defaultTheme: DashboardTheme = {
   name: "default",
+  label: "Matika",
+  description: "Lisa-inspired light blue → teal — Matika brand",
+  palette: {
+    background: { hex: "#f7fbfc", alpha: 1 },
+    midground: { hex: "#0d1c27", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(0, 144, 141, 0.16)",
+    noiseOpacity: 0,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  terminalBackground: "#f5fafb",
+  terminalForeground: "#0d1c27",
+  colorOverrides: {
+    primary: "#006eb3",
+    primaryForeground: "#ffffff",
+    secondary: "#eef5f8",
+    secondaryForeground: "#0d1c27",
+    muted: "#eef5f8",
+    mutedForeground: "#5a6f7c",
+    accent: "#cef3fa",
+    accentForeground: "#005a8c",
+    card: "#ffffff",
+    cardForeground: "#0d1c27",
+    popover: "#ffffff",
+    popoverForeground: "#0d1c27",
+    border: "#dae3e8",
+    input: "#dae3e8",
+    ring: "#00908d",
+  },
+  seriesColors: {
+    inputTokenAccent: "#0d1c27",
+    outputTokenAccent: "#00908d",
+  },
+  swatchColors: ["#0d1c27", "#006eb3", "#f7fbfc"],
+};
+
+/** Classic Hermes dark teal — kept as an opt-in after Matika became default. */
+export const hermesTealTheme: DashboardTheme = {
+  name: "hermes-teal",
   label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  description: "Classic dark teal — the original Hermes look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -208,14 +253,14 @@ export const nousBlueTheme: DashboardTheme = {
 };
 
 /**
- * Same look as ``defaultTheme`` but with a larger root font size, looser
- * line-height, and ``spacious`` density so every rem-based size in the
+ * Same look as ``defaultTheme`` (Matika) but with a larger root font size,
+ * looser line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Matika (Large)",
+  description: "Matika with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
@@ -226,11 +271,17 @@ export const defaultLargeTheme: DashboardTheme = {
     ...DEFAULT_LAYOUT,
     density: "spacious",
   },
+  terminalBackground: defaultTheme.terminalBackground,
+  terminalForeground: defaultTheme.terminalForeground,
+  colorOverrides: defaultTheme.colorOverrides,
+  seriesColors: defaultTheme.seriesColors,
+  swatchColors: defaultTheme.swatchColors,
 };
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  "hermes-teal": hermesTealTheme,
   "nous-blue": nousBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,
