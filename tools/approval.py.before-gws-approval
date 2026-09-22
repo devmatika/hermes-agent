@@ -991,111 +991,6 @@ def _tirith_scan(command: str) -> dict:
         }]}
 
 
-
-def _trusted_google_workspace_skill_action(command: str):
-    """Return the exact trusted Google Workspace action or None.
-
-    This accepts only the profile-local Google Workspace launcher generated
-    by the bundled skill. Additional shell commands, substitutions, pipes,
-    redirects other than the final 2>&1, and untrusted script paths fail
-    closed and continue through the normal Tirith flow.
-    """
-    import re as _re
-    import shlex as _shlex
-
-    if not isinstance(command, str) or not command.strip():
-        return None
-
-    if "\x00" in command or "\n" in command or "\r" in command:
-        return None
-
-    try:
-        lexer = _shlex.shlex(
-            command,
-            posix=True,
-            punctuation_chars=";&|<>()",
-        )
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except (TypeError, ValueError):
-        return None
-
-    if len(tokens) < 9:
-        return None
-
-    home_match = _re.fullmatch(
-        r"HERMES_HOME=(/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*)",
-        tokens[1],
-    )
-    if not home_match:
-        return None
-
-    profile_home = home_match.group(1)
-
-    expected_prefix = [
-        "export",
-        f"HERMES_HOME={profile_home}",
-        ";",
-        f"VPY={profile_home}/.gws-venv/bin/python",
-        ";",
-        "$VPY",
-        "$HERMES_HOME/skills/productivity/google-workspace/"
-        "scripts/google_api.py",
-    ]
-
-    if tokens[:7] != expected_prefix:
-        return None
-
-    service = tokens[7].lower()
-    action = tokens[8].lower()
-
-    allowed_actions = {
-        ("calendar", "list"),
-        ("calendar", "search"),
-        ("calendar", "get"),
-        ("calendar", "create"),
-        ("calendar", "update"),
-        ("calendar", "delete"),
-        ("gmail", "search"),
-        ("gmail", "get"),
-        ("gmail", "send"),
-        ("gmail", "reply"),
-    }
-
-    if (service, action) not in allowed_actions:
-        return None
-
-    arguments = tokens[9:]
-
-    # The skill appends this harmless stderr redirect.
-    if arguments[-3:] == ["2", ">&", "1"]:
-        arguments = arguments[:-3]
-
-    forbidden_tokens = {
-        ";", "&&", "||", "|", "&",
-        ">", ">>", "<", "<<", ">&", "&>",
-        "(", ")", "((", "))",
-    }
-
-    for token in arguments:
-        if token in forbidden_tokens:
-            return None
-
-        if any(marker in token for marker in (
-            "$(",
-            "`",
-            "<(",
-            ">(",
-            "\x00",
-            "\n",
-            "\r",
-        )):
-            return None
-
-    return f"google.{service}.{action}"
-
-
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1114,15 +1009,6 @@ def check_all_command_guards(command: str, env_type: str,
     if _yolo_active() or approval_mode == "off":
         return _approved()
     if _command_matches_permanent_allowlist(command):
-        return _approved()
-
-    trusted_gws_action = _trusted_google_workspace_skill_action(command)
-    if trusted_gws_action is not None:
-        logger.info(
-            "Skipping duplicate terminal approval for trusted Google "
-            "Workspace skill action: %s",
-            trusted_gws_action,
-        )
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
