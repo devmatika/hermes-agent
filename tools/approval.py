@@ -1099,6 +1099,38 @@ def _trusted_google_workspace_skill_action(command: str):
 
     stripped = _strip_harmless_gws_shell_suffixes(command)
 
+    profile_py = (
+        r"/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/"
+        r"(?:\.gws-venv|\.venv-gws|skills/productivity/google-workspace/venv)/bin/python"
+    )
+    profile_script = (
+        r"/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/skills/productivity/"
+        r"google-workspace/scripts/google_api\.py"
+    )
+
+    # Absolute launcher forms Matika agents invent when they miss the export HERMES_HOME recipe:
+    #   GAPI="python /opt/data/profiles/<p>/.gws-venv/bin/python …/google_api.py"; $GAPI calendar list …
+    #   /opt/data/profiles/<p>/.gws-venv/bin/python …/google_api.py calendar list …
+    abs_launcher_re = _re.compile(
+        r"^(?:"
+        r'(?:GAPI="(?:python(?:3)?\s+)?(?P<py1>' + profile_py + r")\s+(?P<script1>" + profile_script + r')"\s*;\s*\$GAPI)'
+        r"|"
+        r"(?P<py2>" + profile_py + r")\s+(?P<script2>" + profile_script + r")"
+        r")\s+"
+        r"(?P<service>calendar|gmail)\s+(?P<action>[A-Za-z_]+)"
+        r"(?P<args>(?:\s+[^\s;&|<>()`\"']+)*)$"
+    )
+    m = abs_launcher_re.fullmatch(stripped)
+    if m:
+        py = m.group("py1") or m.group("py2") or ""
+        script = m.group("script1") or m.group("script2") or ""
+        # Same profile home for interpreter + script (no cross-profile launch).
+        py_home = "/".join(py.split("/")[:5])  # /opt/data/profiles/<name>
+        script_home = "/".join(script.split("/")[:5])
+        service, action = m.group("service").lower(), m.group("action").lower()
+        if py_home and py_home == script_home and (service, action) in allowed_actions:
+            return f"google.{service}.{action}"
+
     # Skill-dir form used by Matika agents:
     #   cd /opt/data/profiles/<p>/skills/productivity/google-workspace &&
     #   GAPI="python scripts/google_api.py" && $GAPI calendar list …
@@ -1112,7 +1144,7 @@ def _trusted_google_workspace_skill_action(command: str):
         r"|"
         r"python(?:3)?"
         r"|"
-        r"(?:/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/(?:\.gws-venv|skills/productivity/google-workspace/venv)/bin/python)"
+        r"(?:/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/(?:\.gws-venv|\.venv-gws|skills/productivity/google-workspace/venv)/bin/python)"
         r")\s+"
         r"(?:scripts/google_api\.py\s+)?"
         r"(?P<service>calendar|gmail)\s+(?P<action>[A-Za-z_]+)"

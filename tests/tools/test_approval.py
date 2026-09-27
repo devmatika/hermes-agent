@@ -960,6 +960,28 @@ class TestTrustedGoogleWorkspaceSkillAction:
         assert _trusted_google_workspace_skill_action(cmd) is None
 
 
+    def test_absolute_venv_gws_gapi_form(self):
+        from tools.approval import _trusted_google_workspace_skill_action
+
+        cmd = (
+            'GAPI="python /opt/data/profiles/matika/.venv-gws/bin/python '
+            '/opt/data/profiles/matika/skills/productivity/google-workspace/scripts/google_api.py"; '
+            "$GAPI calendar list --start 2026-09-27T00:00:00Z --end 2026-09-27T23:59:59Z "
+            "2>&1 | head -20"
+        )
+        assert _trusted_google_workspace_skill_action(cmd) == "google.calendar.list"
+
+    def test_uv_pip_install_not_trusted(self):
+        from tools.approval import _trusted_google_workspace_skill_action
+
+        cmd = (
+            "uv venv /opt/data/profiles/matika/.venv-gws --python 3.13 2>&1 | tail -2; "
+            "uv pip install --python /opt/data/profiles/matika/.venv-gws/bin/python "
+            "google-api-python-client==2.194.0 2>&1 | tail -5"
+        )
+        assert _trusted_google_workspace_skill_action(cmd) is None
+
+
 class TestApiServerRunsNotifyAttended:
     """api_server stays unattended unless a gateway_notify listener is registered.
 
