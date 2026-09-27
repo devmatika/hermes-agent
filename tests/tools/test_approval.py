@@ -856,6 +856,117 @@ class TestWebhookApprovalExclusion:
         assert "approvals.unattended_mode" in result["message"]
 
 
+class TestApiServerRunsNotifyAttended:
+    """api_server stays unattended unless a gateway_notify listener is registered.
+
+    WebUI Runs API (`POST /v1/runs`) registers notify so humans can resolve via
+    `POST /v1/runs/{run_id}/approval`. Without notify, instant deny remains.
+    """
+
+    def test_presence_stays_unattended_without_notify(self, monkeypatch):
+        import tools.approval as approval_mod
+        from tools.approval import _presence
+        from tools.approval_context import set_current_session_key, reset_current_session_key
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        tokens = set_current_session_key("run-no-notify")
+        try:
+            with approval_mod._lock:
+                approval_mod._gateway_notify_cbs.pop("run-no-notify", None)
+            _cb, is_cli, is_gateway, is_ask = _presence()
+            assert is_cli is False
+            assert is_gateway is False
+            assert is_ask is False
+        finally:
+            reset_current_session_key(tokens)
+
+    def test_presence_attended_when_notify_registered(self, monkeypatch):
+        import tools.approval as approval_mod
+        from tools.approval import _presence, register_gateway_notify, unregister_gateway_notify
+        from tools.approval_context import set_current_session_key, reset_current_session_key
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        tokens = set_current_session_key("run-with-notify")
+        register_gateway_notify("run-with-notify", lambda _data: None)
+        try:
+            _cb, is_cli, is_gateway, is_ask = _presence()
+            assert is_cli is False
+            assert is_gateway is True
+            assert is_ask is False
+        finally:
+            unregister_gateway_notify("run-with-notify")
+            reset_current_session_key(tokens)
+
+    def test_request_tool_approval_waits_on_notify_not_instant_deny(self, monkeypatch):
+        import tools.approval as approval_mod
+        from tools.approval import request_tool_approval, register_gateway_notify, unregister_gateway_notify
+        from tools.approval_context import set_current_session_key, reset_current_session_key
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+
+        seen = {}
+
+        def _fake_await(session_key, notify_cb, data, surface="gateway"):
+            seen["session_key"] = session_key
+            seen["data"] = data
+            return {"resolved": True, "choice": "once", "reason": None, "notify_failed": False}
+
+        monkeypatch.setattr(approval_mod, "_await_gateway_decision", _fake_await)
+        tokens = set_current_session_key("run-approve-once")
+        register_gateway_notify("run-approve-once", lambda _data: None)
+        try:
+            res = request_tool_approval(
+                "terminal",
+                "Create this Google Calendar event?",
+                rule_key="google.calendar.create",
+            )
+            assert res["approved"] is True
+            assert seen["session_key"] == "run-approve-once"
+            assert "Create this Google Calendar event?" in (seen["data"].get("description") or "")
+        finally:
+            unregister_gateway_notify("run-approve-once")
+            reset_current_session_key(tokens)
+
+    def test_api_server_without_notify_still_denies_plugin_approval(self, monkeypatch):
+        import tools.approval as approval_mod
+        from tools.approval import request_tool_approval
+        from tools.approval_context import set_current_session_key, reset_current_session_key
+
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
+        tokens = set_current_session_key("run-deny")
+        try:
+            with approval_mod._lock:
+                approval_mod._gateway_notify_cbs.pop("run-deny", None)
+            res = request_tool_approval(
+                "terminal",
+                "Create this Google Calendar event?",
+                rule_key="google.calendar.create",
+            )
+            assert res["approved"] is False
+            assert "unattended platform" in (res.get("message") or "").lower() or "api_server" in (res.get("message") or "")
+        finally:
+            reset_current_session_key(tokens)
+
+
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""
 

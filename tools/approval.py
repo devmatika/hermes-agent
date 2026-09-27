@@ -793,6 +793,17 @@ def _presence(approval_callback=None) -> tuple:
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     if _is_single_query_approval_context():
         is_cli = is_gateway = is_ask = False
+        return approval_callback, is_cli, is_gateway, is_ask
+    # Cron binds a platform for delivery only — never an interactive approval surface.
+    if _is_cron_approval_context():
+        return approval_callback, is_cli, False, is_ask
+    # api_server / webhook are unattended by default (#37284/#87509). The /v1/runs path
+    # (WebUI with HERMES_WEBUI_GATEWAY_USE_RUNS_API) registers gateway_notify so a human
+    # can resolve via POST /v1/runs/{run_id}/approval — treat that as attended gateway.
+    if not is_gateway:
+        session_key = get_current_session_key(default="")
+        if session_key and _gateway_notify_cb(session_key) is not None:
+            is_gateway = True
     return approval_callback, is_cli, is_gateway, is_ask
 
 
