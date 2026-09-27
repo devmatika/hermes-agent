@@ -856,6 +856,110 @@ class TestWebhookApprovalExclusion:
         assert "approvals.unattended_mode" in result["message"]
 
 
+class TestFormatTirithDescription:
+    """Approval prompts must stay short when Tirith only reports incomplete lookups."""
+
+    def test_collapses_incomplete_package_threat_intel(self):
+        from tools.approval import _format_tirith_description
+
+        findings = [
+            {
+                "rule_id": "analysis_incomplete",
+                "severity": "MEDIUM",
+                "title": "Package threat intelligence could not be completed",
+                "description": (
+                    "Tirith could not complete every configured runtime threat-intelligence "
+                    f"check for package '{pkg}' (OSV lookup deadline exhausted). "
+                    "This is incomplete verification, not evidence that the package is malicious."
+                ),
+            }
+            for pkg in (
+                "google-api-python-client",
+                "google-auth",
+                "httplib2",
+            )
+        ]
+        text = _format_tirith_description({"action": "warn", "findings": findings, "summary": ""})
+        assert "Security scan incomplete for google-api-python-client, google-auth, httplib2" in text
+        assert "Incomplete verification, not evidence of malware" in text
+        assert "OSV lookup deadline exhausted" not in text
+        assert text.count("Package threat intelligence could not be completed") == 0
+
+    def test_keeps_real_findings_alongside_incomplete(self):
+        from tools.approval import _format_tirith_description
+
+        text = _format_tirith_description({
+            "action": "warn",
+            "findings": [
+                {
+                    "rule_id": "analysis_incomplete",
+                    "severity": "MEDIUM",
+                    "title": "Package threat intelligence could not be completed",
+                    "description": "check for package 'foo' (deadline exhausted). Incomplete verification.",
+                },
+                {
+                    "rule_id": "curl_pipe_shell",
+                    "severity": "HIGH",
+                    "title": "Pipe to shell",
+                    "description": "curl | sh pattern",
+                },
+            ],
+            "summary": "",
+        })
+        assert "Security scan incomplete for foo" in text
+        assert "Pipe to shell" in text
+
+
+    def test_incomplete_without_package_name(self):
+        from tools.approval import _format_tirith_description
+
+        text = _format_tirith_description({
+            "action": "warn",
+            "findings": [{
+                "rule_id": "analysis_incomplete",
+                "severity": "MEDIUM",
+                "title": "Threat intelligence could not be completed",
+                "description": "OSV lookup deadline exhausted. Incomplete verification.",
+            }],
+            "summary": "",
+        })
+        assert text.startswith("Security scan incomplete —")
+        assert " for ?" not in text
+
+
+class TestTrustedGoogleWorkspaceSkillAction:
+    def test_skill_dir_gapi_calendar_list_with_tail(self):
+        from tools.approval import _trusted_google_workspace_skill_action
+
+        cmd = (
+            "cd /opt/data/profiles/matika/skills/productivity/google-workspace && "
+            'GAPI="python scripts/google_api.py" && $GAPI calendar list '
+            "--start 2026-09-27T00:00:00+02:00 --end 2026-09-27T23:59:59+02:00 "
+            "2>&1 | tail -20"
+        )
+        assert _trusted_google_workspace_skill_action(cmd) == "google.calendar.list"
+
+    def test_export_hermes_home_form_still_trusted(self):
+        from tools.approval import _trusted_google_workspace_skill_action
+
+        cmd = (
+            "export HERMES_HOME=/opt/data/profiles/matika ; "
+            "VPY=/opt/data/profiles/matika/.gws-venv/bin/python ; "
+            "$VPY $HERMES_HOME/skills/productivity/google-workspace/scripts/google_api.py "
+            "calendar list --start 2026-09-27T00:00:00+02:00 2>&1"
+        )
+        assert _trusted_google_workspace_skill_action(cmd) == "google.calendar.list"
+
+    def test_rejects_pipe_to_shell(self):
+        from tools.approval import _trusted_google_workspace_skill_action
+
+        cmd = (
+            "cd /opt/data/profiles/matika/skills/productivity/google-workspace && "
+            'GAPI="python scripts/google_api.py" && $GAPI calendar list | sh'
+        )
+        assert _trusted_google_workspace_skill_action(cmd) is None
+
+
 class TestApiServerRunsNotifyAttended:
     """api_server stays unattended unless a gateway_notify listener is registered.
 

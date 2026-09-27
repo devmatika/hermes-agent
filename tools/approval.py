@@ -969,16 +969,66 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 # --- Combined pre-exec guard (tirith + dangerous command detection) -------------------------------------------------
 
 def _format_tirith_description(tirith_result: dict) -> str:
-    """Human-readable severity/title/description summary of tirith findings."""
-    parts = []
+    """Human-readable severity/title/description summary of tirith findings.
+
+    Incomplete package threat-intel lookups (deadline exhausted / analysis_incomplete)
+    collapse into one short line — the full per-provider wall is not useful in chat or
+    the WebUI approval card (same surface Telegram shows as Reason).
+    """
+    import re as _re
+
+    pkg_re = _re.compile(r"package\s+'([^']+)'", _re.I)
+    incomplete_pkgs: list[str] = []
+    other_parts: list[str] = []
     for f in tirith_result.get("findings") or []:
-        severity, title, desc = f.get("severity", ""), f.get("title", ""), f.get("description", "")
+        severity = f.get("severity", "") or ""
+        title = f.get("title", "") or ""
+        desc = f.get("description", "") or ""
+        rule_id = str(f.get("rule_id") or "")
+        blob = f"{rule_id} {title} {desc}".lower()
+        is_incomplete = (
+            "analysis_incomplete" in blob
+            or "could not be completed" in blob
+            or "incomplete verification" in blob
+            or "deadline exhausted" in blob
+        )
+        if is_incomplete:
+            match = pkg_re.search(desc) or pkg_re.search(title)
+            incomplete_pkgs.append(match.group(1) if match else "?")
+            continue
         if title:
             text = f"{title}: {desc}" if desc else title
-            parts.append(f"[{severity}] {text}" if severity else text)
+            other_parts.append(f"[{severity}] {text}" if severity else text)
+
+    parts: list[str] = []
+    if incomplete_pkgs:
+        seen: set[str] = set()
+        pkgs: list[str] = []
+        for pkg in incomplete_pkgs:
+            if not pkg or pkg == "?":
+                continue
+            if pkg in seen:
+                continue
+            seen.add(pkg)
+            pkgs.append(pkg)
+        if pkgs:
+            shown = ", ".join(pkgs[:5])
+            more = f" (+{len(pkgs) - 5} more)" if len(pkgs) > 5 else ""
+            parts.append(
+                f"Security scan incomplete for {shown}{more} — threat-intel lookups timed out. "
+                "Incomplete verification, not evidence of malware."
+            )
+        else:
+            parts.append(
+                "Security scan incomplete — threat-intel lookups timed out. "
+                "Incomplete verification, not evidence of malware."
+            )
+    parts.extend(other_parts)
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
         return f"Security scan: {summary}"
+    if len(parts) == 1:
+        return parts[0]
     return "Security scan — " + "; ".join(parts)
 
 
@@ -1003,13 +1053,27 @@ def _tirith_scan(command: str) -> dict:
 
 
 
+def _strip_harmless_gws_shell_suffixes(command: str) -> str:
+    """Drop trailing ``2>&1`` / ``| head -N`` / ``| tail -N`` used only for log trimming."""
+    import re as _re
+
+    s = str(command or "").strip()
+    while True:
+        nxt = _re.sub(r"\s*2>&1\s*$", "", s)
+        nxt = _re.sub(r"\s*\|\s*(?:head|tail)\s+-\d+\s*$", "", nxt)
+        if nxt == s:
+            return s.strip()
+        s = nxt
+
+
 def _trusted_google_workspace_skill_action(command: str):
     """Return the exact trusted Google Workspace action or None.
 
-    This accepts only the profile-local Google Workspace launcher generated
-    by the bundled skill. Additional shell commands, substitutions, pipes,
-    redirects other than the final 2>&1, and untrusted script paths fail
-    closed and continue through the normal Tirith flow.
+    Accepts the profile-local Google Workspace launcher shapes used by the bundled
+    skill (``export HERMES_HOME=…; $VPY …/google_api.py …`` and the skill-dir
+    ``cd …/google-workspace && … google_api.py <service> <action> …`` forms).
+    Extra shell (pipes other than trailing head/tail, substitutions, redirects
+    other than final ``2>&1``) fails closed into the normal Tirith flow.
     """
     import re as _re
     import shlex as _shlex
@@ -1020,9 +1084,49 @@ def _trusted_google_workspace_skill_action(command: str):
     if "\x00" in command or "\n" in command or "\r" in command:
         return None
 
+    allowed_actions = {
+        ("calendar", "list"),
+        ("calendar", "search"),
+        ("calendar", "get"),
+        ("calendar", "create"),
+        ("calendar", "update"),
+        ("calendar", "delete"),
+        ("gmail", "search"),
+        ("gmail", "get"),
+        ("gmail", "send"),
+        ("gmail", "reply"),
+    }
+
+    stripped = _strip_harmless_gws_shell_suffixes(command)
+
+    # Skill-dir form used by Matika agents:
+    #   cd /opt/data/profiles/<p>/skills/productivity/google-workspace &&
+    #   GAPI="python scripts/google_api.py" && $GAPI calendar list …
+    # or: cd … && python scripts/google_api.py calendar list …
+    skill_dir_re = _re.compile(
+        r"^cd\s+"
+        r"(?P<root>/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/skills/productivity/google-workspace)"
+        r"\s*&&\s*"
+        r"(?:"
+        r'GAPI="python(?:3)?\s+scripts/google_api\.py"\s*&&\s*\$GAPI'
+        r"|"
+        r"python(?:3)?"
+        r"|"
+        r"(?:/opt/data/profiles/[A-Za-z0-9][A-Za-z0-9._-]*/(?:\.gws-venv|skills/productivity/google-workspace/venv)/bin/python)"
+        r")\s+"
+        r"(?:scripts/google_api\.py\s+)?"
+        r"(?P<service>calendar|gmail)\s+(?P<action>[A-Za-z_]+)"
+        r"(?P<args>(?:\s+[^\s;&|<>()`\"']+)*)$"
+    )
+    m = skill_dir_re.fullmatch(stripped)
+    if m:
+        service, action = m.group("service").lower(), m.group("action").lower()
+        if (service, action) in allowed_actions:
+            return f"google.{service}.{action}"
+
     try:
         lexer = _shlex.shlex(
-            command,
+            stripped,
             posix=True,
             punctuation_chars=";&|<>()",
         )
@@ -1060,19 +1164,6 @@ def _trusted_google_workspace_skill_action(command: str):
 
     service = tokens[7].lower()
     action = tokens[8].lower()
-
-    allowed_actions = {
-        ("calendar", "list"),
-        ("calendar", "search"),
-        ("calendar", "get"),
-        ("calendar", "create"),
-        ("calendar", "update"),
-        ("calendar", "delete"),
-        ("gmail", "search"),
-        ("gmail", "get"),
-        ("gmail", "send"),
-        ("gmail", "reply"),
-    }
 
     if (service, action) not in allowed_actions:
         return None
