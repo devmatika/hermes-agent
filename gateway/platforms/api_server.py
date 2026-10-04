@@ -2142,6 +2142,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
         max_iterations = _current_max_iterations()
+        voice_policy = None
+        try:
+            from gateway.voice_tool_policy import current_voice_tool_policy
+            voice_policy = current_voice_tool_policy()
+        except Exception:
+            voice_policy = None
+        if voice_policy is not None:
+            # Voice: start from an empty toolset surface; concrete tools are injected
+            # from the allowlist after AIAgent construction (no tool_search).
+            enabled_toolsets = []
+            max_iterations = int(voice_policy.max_iterations)
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy
             policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
@@ -2169,6 +2180,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        if voice_policy is not None:
+            from gateway.voice_tool_policy import apply_voice_tool_policy_to_agent
+            apply_voice_tool_policy_to_agent(agent, voice_policy)
+            logger.info(
+                "Voice tool policy applied session=%s effective_tools=%s max_iterations=%s",
+                session_id or "",
+                sorted(voice_policy.effective_tools),
+                voice_policy.max_iterations,
+            )
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -3670,9 +3690,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_profile = _api_request_profile.get()
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
+        try:
+            from gateway.voice_tool_policy import current_voice_tool_policy
+            voice_policy = current_voice_tool_policy()
+        except Exception:
+            voice_policy = None
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from gateway.voice_tool_policy import bind_voice_tool_policy, reset_voice_tool_policy
+            voice_token = bind_voice_tool_policy(voice_policy)
             with self._profile_scope(request_profile):
                 tokens = self._bind_api_server_session(
                     chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
@@ -3750,10 +3777,35 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
                     clear_session_vars(tokens)
+                    reset_voice_tool_policy(voice_token)
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
+            if voice_policy is not None and voice_policy.turn_timeout_s > 0:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(None, _run),
+                    timeout=float(voice_policy.turn_timeout_s),
+                )
             return await loop.run_in_executor(None, _run)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Voice turn timed out after %.1ss session=%s",
+                float(voice_policy.turn_timeout_s) if voice_policy else -1,
+                session_id or "",
+            )
+            return (
+                {
+                    "final_response": "The voice turn timed out before a complete answer was ready.",
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": [],
+                    "completed": False,
+                    "partial": True,
+                    "failed": True,
+                    "error": "voice_turn_timeout",
+                },
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
         finally:
             self._inflight_agent_runs -= 1
 
