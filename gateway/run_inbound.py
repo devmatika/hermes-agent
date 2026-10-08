@@ -2018,10 +2018,25 @@ class GatewayInboundMixin:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
         if not result.get("success"):
-            fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
-            if fallback.get("success"):
-                logger.info("Configured STT failed for %s; recovered with local STT", path)
-                result = fallback
+            # Local Whisper recovery is only for local/auto providers. An explicit
+            # cloud/command provider (e.g. pipecat/Deepgram) must fail closed.
+            allow_local_fallback = True
+            try:
+                from tools.transcription_tools import _get_provider, _load_stt_config
+                configured = (_get_provider(_load_stt_config()) or "").strip().lower()
+                allow_local_fallback = configured in {"", "local", "local_command", "none"}
+                if not allow_local_fallback:
+                    logger.error(
+                        "Configured STT provider '%s' failed for %s; not falling back to local STT: %s",
+                        configured, path, result.get("error", "unknown error"),
+                    )
+            except Exception as exc:  # noqa: BLE001 — keep fallback available if probe fails
+                logger.debug("STT fallback policy probe failed: %s", exc)
+            if allow_local_fallback:
+                fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
+                if fallback.get("success"):
+                    logger.info("Configured STT failed for %s; recovered with local STT", path)
+                    result = fallback
         if not result["success"]:
             logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
             return None, self._untranscribed_audio_note(path)
