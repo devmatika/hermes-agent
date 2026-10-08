@@ -2512,12 +2512,50 @@ def _event_media_is_audio(event, index: int) -> bool:
     return _event_media_kind_is(event, index, "audio/", frozenset({MessageType.VOICE, MessageType.AUDIO}))
 
 
+# Extensions treated as STT-able when Telegram (etc.) sends audio as a document
+# with a weak/missing MIME (common for phone .m4a recordings).
+_STT_AUDIO_EXTENSIONS = frozenset({
+    ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".aac", ".flac", ".oga", ".mka",
+})
+
+
+def _event_media_path_ext(event, index: int) -> str:
+    """Lowercased suffix of media_urls[index], or ""."""
+    media_urls = getattr(event, "media_urls", None) or []
+    if index >= len(media_urls):
+        return ""
+    name = str(media_urls[index] or "")
+    # cache names can be "id_id_original.m4a"
+    dot = name.rfind(".")
+    return name[dot:].lower() if dot >= 0 else ""
+
+
+def _event_media_looks_like_audio(event, index: int) -> bool:
+    """True when MIME or filename indicates an audio bitstream (not video/pdf)."""
+    mtype = (_event_media_type_at(event, index) or "").lower()
+    if mtype.startswith("audio/"):
+        return True
+    if mtype in {"application/ogg", "application/mpeg"}:
+        return True
+    return _event_media_path_ext(event, index) in _STT_AUDIO_EXTENSIONS
+
+
 def _event_media_is_stt_input(event, index: int) -> bool:
-    """True when an audio attachment should enter the automatic STT pipeline."""
+    """True when an audio attachment should enter the automatic STT pipeline.
+
+    Voice notes (MessageType.VOICE) always auto-transcribe. Audio file attachments
+    (MessageType.AUDIO) and documents that are actually audio (MIME/extension) also
+    auto-transcribe — phone recordings often arrive as .m4a documents, not voice bubbles.
+    Non-audio documents stay on the file-note path.
+    """
     message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-        return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    if message_type == MessageType.VOICE:
+        return True
+    if message_type == MessageType.AUDIO:
+        return True
+    if message_type == MessageType.DOCUMENT:
+        return _event_media_looks_like_audio(event, index)
+    return _event_media_type_at(event, index).startswith("audio/")
 
 
 def _event_media_is_video(event, index: int) -> bool:
