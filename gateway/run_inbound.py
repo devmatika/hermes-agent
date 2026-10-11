@@ -1437,18 +1437,18 @@ class GatewayInboundMixin:
     ) -> Tuple[list, list, list, list]:
         """Split ``event.media_urls`` into (image, STT-voice, audio-file, video) paths. Per-attachment
         MIME wins over the message-level type (a document sent alongside an image must not be routed
-        as an image). MessageType.AUDIO / mixed DOCUMENT audio is a file attachment, never STT."""
+        as an image). Audio that passes ``_event_media_is_stt_input`` (VOICE, AUDIO, audio documents)
+        goes to auto-STT; remaining audio MIME attachments get the file-note path."""
         from gateway.run import _event_media_is_audio, _event_media_is_image, _event_media_is_stt_input
         image_paths, audio_paths, audio_file_paths, video_paths = [], [], [], []
         for i, path in enumerate(event.media_urls or []):
             mtype = event.media_types[i] if i < len(event.media_types) else ""
             if _event_media_is_image(event, i):
                 image_paths.append(path)
-            if _event_media_is_audio(event, i):
-                if event.message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-                    audio_file_paths.append(path)
-                elif not pending_stt_prepared and _event_media_is_stt_input(event, i):
-                    audio_paths.append(path)
+            if not pending_stt_prepared and _event_media_is_stt_input(event, i):
+                audio_paths.append(path)
+            elif _event_media_is_audio(event, i) and not _event_media_is_stt_input(event, i):
+                audio_file_paths.append(path)
             if mtype.startswith("video/") or (not mtype and event.message_type == MessageType.VIDEO):
                 video_paths.append(path)
         return image_paths, audio_paths, audio_file_paths, video_paths
