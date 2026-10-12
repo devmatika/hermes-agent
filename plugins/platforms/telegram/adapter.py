@@ -5663,13 +5663,26 @@ class TelegramAdapter(BasePlatformAdapter):
         text = re.sub(r'~~(.+?)~~', _ph_wrap('~', '~'), text)
         text = re.sub(r'\|\|(.+?)\|\|', _ph_wrap('||', '||'), text)
         # 9) Blockquotes: protect leading > from escaping; expandable quotes (**> starts, trailing || ends).
-        def _convert_blockquote(m):
+        # A multi-line expandable quote ends with || on its LAST `>` line, so the closing mark is kept on a
+        # continuation line only while an expandable quote opened by **> is still running.
+        _quote_re = re.compile(r'^((?:\*\*)?>{1,3}) (.+)$')
+        _expandable_open = False
+        _quote_lines = []
+        for _line in text.split('\n'):
+            m = _quote_re.match(_line)
+            if not m:
+                _expandable_open = False
+                _quote_lines.append(_line)
+                continue
             prefix, content = m.group(1), m.group(2)  # prefix: >, >>, >>>, **>, **>> …
-            if prefix.startswith('**') and content.endswith('||'):
-                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
-            return _ph(f'{prefix} {_escape_mdv2(content)}')
-
-        text = re.sub(r'^((?:\*\*)?>{1,3}) (.+)$', _convert_blockquote, text, flags=re.MULTILINE)
+            closes = content.endswith('||') and (prefix.startswith('**') or _expandable_open)
+            if prefix.startswith('**'):
+                _expandable_open = not closes
+            elif closes:
+                _expandable_open = False
+            body = f'{_escape_mdv2(content[:-2])}||' if closes else _escape_mdv2(content)
+            _quote_lines.append(_ph(f'{prefix} {body}'))
+        text = '\n'.join(_quote_lines)
         # 10) Escape remaining special characters in plain text
         text = _escape_mdv2(text)
         # 11) Restore placeholders in reverse insertion order so nested placeholders resolve.

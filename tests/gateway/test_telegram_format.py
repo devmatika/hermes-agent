@@ -282,6 +282,18 @@ class TestFormatMessageBlockquote:
         assert "\\|" in result
         assert "\\>" not in result
 
+    def test_multiline_expandable_blockquote_keeps_closing_mark(self, adapter):
+        """**> opens an expandable quote; the closing || sits on its LAST > line and must stay unescaped."""
+        result = adapter.format_message("**> Title\n> first\n> last (x)||\nafter")
+        assert "**> Title" in result
+        assert "> last \\(x\\)||" in result
+        assert "\\|\\|" not in result
+
+    def test_closing_mark_only_inside_open_expandable_quote(self, adapter):
+        """After an expandable quote is interrupted, a later plain quote's || is escaped again."""
+        result = adapter.format_message("**> open\nplain\n> later||")
+        assert "\\|\\|" in result
+
 
 # =========================================================================
 # format_message - mixed/complex
