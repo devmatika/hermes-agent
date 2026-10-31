@@ -2242,9 +2242,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             voice_policy = None
         if voice_policy is not None:
-            # Voice: start from an empty toolset surface; concrete tools are injected
-            # from the allowlist after AIAgent construction (no tool_search).
-            enabled_toolsets = []
+            if voice_policy.enabled_toolsets is not None:
+                enabled_toolsets = list(voice_policy.enabled_toolsets)
             max_iterations = int(voice_policy.max_iterations)
         if room_dispatch is not None:
             from gateway.hosted_room_execution_policy import RoomExecutionPolicy

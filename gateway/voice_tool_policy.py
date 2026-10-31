@@ -1,10 +1,8 @@
 """Voice tool policy for Pipecat / realtime voice sessions.
 
-Bound only for turns that look like live voice (pipecat). Clears the default
-api_server tool surface and injects a tiny allowlist (Tier B: Onyx MCP only).
-
-This file is bind-mounted over the image path via docker-compose.override.yml
-so the change is host-side and revertible.
+Bound only for turns that look like live voice (pipecat).
+Keeps the tools required for voice operations (ClickUp, Calendar, Google Workspace, Onyx, etc.)
+and exposes concrete tool definitions directly so the model can invoke them in single-turn voice calls.
 """
 
 from __future__ import annotations
@@ -23,36 +21,22 @@ _VOICE_POLICY: ContextVar["VoiceToolPolicy | None"] = ContextVar(
 _VOICE_MARKER = "[pipecat-voice-session]"
 _VOICE_SESSION_PREFIX = "pipecat-voice:"
 _VOICE_CLIENT = "pipecat-voice"
-_META_TOOLS = {"tool_search", "tool_describe", "tool_call"}
-_WRITE_HINTS = (
-    "create",
-    "update",
-    "delete",
-    "write",
-    "send",
-    "post",
-    "put",
-    "remove",
-    "grant",
-    "share",
-    "upload",
-)
 
 _HOOKS_INSTALLED = False
 
 
 @dataclass
 class VoiceToolPolicy:
-    max_iterations: int = 2
-    turn_timeout_s: float = 45.0
-    enabled_toolsets: tuple[str, ...] = ("onyx",)
+    max_iterations: int = 4
+    turn_timeout_s: float = 60.0
+    enabled_toolsets: tuple[str, ...] | None = None
     effective_tools: set[str] = field(default_factory=set)
     max_tokens: int = 1024
     ephemeral_suffix: str = (
-        "You are in live voice mode. Reply in 1-2 short spoken sentences. "
-        "Prefer answering without tools; if you need Matika company knowledge, "
-        "use Onyx search only. Never use terminal, browser, email, ClickUp, or "
-        "Google Workspace tools in this mode."
+        "You are in live voice mode. Reply in 1-2 short, conversational spoken sentences suitable for speech. "
+        "When asked to view, search, or perform tasks (e.g. in ClickUp, Google Calendar, Google Workspace, or company knowledge), "
+        "use the appropriate tool directly. Do not claim you cannot access tools or that you are limited to knowledge base only. "
+        "Keep spoken answers natural, concise, and avoid markdown formatting like tables or long bullet lists."
     )
 
 
@@ -106,21 +90,14 @@ def resolve_voice_tool_policy(
 
 
 def apply_voice_tool_policy_to_agent(agent: Any, policy: VoiceToolPolicy) -> None:
-    """Replace the agent tool surface with Onyx retrieval tools only (fail closed)."""
+    """Apply voice runtime limits (tokens, iterations, system prompt) and ensure concrete tools are available."""
     import model_tools
 
-    toolsets = [str(t).strip() for t in (policy.enabled_toolsets or ()) if str(t).strip()]
-    defs: list[dict[str, Any]] = []
-    if toolsets:
-        try:
-            defs = list(
-                model_tools.get_tool_definitions(
-                    enabled_toolsets=toolsets,
-                    quiet_mode=True,
-                    skip_tool_search_assembly=True,
-                )
-            )
-        except TypeError:
+    # If specific toolsets were configured on the policy, apply them
+    if policy.enabled_toolsets is not None:
+        toolsets = [str(t).strip() for t in policy.enabled_toolsets if str(t).strip()]
+        defs: list[dict[str, Any]] = []
+        if toolsets:
             try:
                 defs = list(
                     model_tools.get_tool_definitions(
@@ -131,46 +108,40 @@ def apply_voice_tool_policy_to_agent(agent: Any, policy: VoiceToolPolicy) -> Non
             except Exception:
                 logger.exception("Voice policy failed loading toolsets=%s", toolsets)
                 defs = []
+        if policy.effective_tools:
+            defs = [d for d in defs if (d.get("function") or {}).get("name") in policy.effective_tools]
+        agent.tools = defs
+        agent.valid_tool_names = {
+            str((d.get("function") or {}).get("name"))
+            for d in defs
+            if (d.get("function") or {}).get("name")
+        }
+        agent.enabled_toolsets = toolsets
+    else:
+        # Default voice policy: augment agent.tools with concrete raw tool definitions
+        # (Google Calendar, Docs, Sheets, Drive, ClickUp, etc.) so voice turns don't require
+        # multiple search/describe rounds.
+        try:
+            raw_defs = list(
+                model_tools.get_tool_definitions(
+                    enabled_toolsets=agent.enabled_toolsets,
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+            )
+            existing_names = {
+                str((d.get("function") or {}).get("name"))
+                for d in agent.tools
+                if (d.get("function") or {}).get("name")
+            }
+            for d in raw_defs:
+                name = str((d.get("function") or {}).get("name") or "")
+                if name and name not in existing_names:
+                    agent.tools.append(d)
+                    existing_names.add(name)
+            agent.valid_tool_names = existing_names
         except Exception:
-            logger.exception("Voice policy failed loading toolsets=%s", toolsets)
-            defs = []
-
-    kept: list[dict[str, Any]] = []
-    for d in defs:
-        name = str((d.get("function") or {}).get("name") or "")
-        low = name.lower()
-        if not name or name in _META_TOOLS:
-            continue
-        if policy.effective_tools and name not in policy.effective_tools:
-            continue
-        if not policy.effective_tools:
-            if "onyx" not in low and not low.startswith("mcp__onyx"):
-                if toolsets != ["onyx"]:
-                    continue
-                if any(h in low for h in _WRITE_HINTS):
-                    continue
-            elif any(h in low for h in _WRITE_HINTS):
-                continue
-        elif any(h in low for h in _WRITE_HINTS):
-            continue
-        kept.append(d)
-
-    if not kept:
-        logger.warning(
-            "Voice policy: no Onyx retrieval tools available for toolsets=%s "
-            "(raw=%s); using empty tool surface",
-            toolsets,
-            sorted(str((d.get("function") or {}).get("name") or "") for d in defs),
-        )
-    defs = kept
-
-    agent.tools = defs
-    agent.valid_tool_names = {
-        str((d.get("function") or {}).get("name"))
-        for d in defs
-        if (d.get("function") or {}).get("name")
-    }
-    agent.enabled_toolsets = toolsets
+            logger.debug("Could not augment agent.tools with raw_defs", exc_info=True)
 
     if getattr(policy, "max_tokens", None):
         try:
@@ -186,9 +157,9 @@ def apply_voice_tool_policy_to_agent(agent: Any, policy: VoiceToolPolicy) -> Non
         )
 
     logger.warning(
-        "Voice tool policy applied tools=%s toolsets=%s max_iterations=%s max_tokens=%s",
-        sorted(agent.valid_tool_names),
-        toolsets,
+        "Voice tool policy applied tools_count=%d toolsets=%s max_iterations=%s max_tokens=%s",
+        len(agent.valid_tool_names),
+        agent.enabled_toolsets,
         policy.max_iterations,
         getattr(policy, "max_tokens", None),
     )
@@ -244,7 +215,7 @@ def _ensure_hooks() -> None:
                         "Bound voice tool policy session_key=%s max_iterations=%s toolsets=%s",
                         kwargs.get("gateway_session_key"),
                         policy.max_iterations,
-                        list(policy.enabled_toolsets),
+                        list(policy.enabled_toolsets) if policy.enabled_toolsets else "all",
                     )
             return await original(self, user_message, conversation_history, *args, **kwargs)
         finally:

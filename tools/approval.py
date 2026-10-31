@@ -987,6 +987,18 @@ def _run_approval_gate(
     if is_approved(session_key, pattern_key):
         return _approved()
 
+    # Voice sessions (Pipecat WebRTC) cannot wait on interactive gateway / CLI approval without freezing the live call audio.
+    if session_key and ("pipecat-voice" in session_key or "voice" in session_key):
+        logger.warning(
+            "Voice session %s reached approval gate for '%s' (pattern: %s): failing fast to prevent call freeze.",
+            session_key, description, pattern_key
+        )
+        return _blocked(
+            f"Action '{description}' requires manual confirmation and cannot be approved during a live voice call. Please perform it via Telegram or the web console.",
+            pattern_key=pattern_key,
+            description=description,
+        )
+
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
     if not is_cli and not is_gateway and not is_ask:
         log_args = (autoapprove_log_prefix, pattern_key, description)
