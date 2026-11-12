@@ -8,6 +8,7 @@ and exposes concrete tool definitions directly so the model can invoke them in s
 from __future__ import annotations
 
 import logging
+import os
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -23,6 +24,11 @@ _VOICE_SESSION_PREFIX = "pipecat-voice:"
 _VOICE_CLIENT = "pipecat-voice"
 
 _HOOKS_INSTALLED = False
+
+# Live voice must answer within seconds: every tool definition is input the model reads before its first word
+# (all 107 tools ≈ 50k tokens per call ≈ 10 s to first token on Matika). Voice keeps only what a spoken request
+# needs. Override per host with HERMES_VOICE_TOOLSETS="a,b,c" ("all" = every tool, the old behaviour).
+DEFAULT_VOICE_TOOLSETS = ("clickup", "clickup_personal", "google_workspace_tools", "onyx", "memory", "web")
 
 
 @dataclass
@@ -71,7 +77,11 @@ def is_voice_turn(
 
 
 def default_voice_tool_policy() -> VoiceToolPolicy:
-    return VoiceToolPolicy()
+    raw = (os.environ.get("HERMES_VOICE_TOOLSETS") or "").strip()
+    if raw.lower() == "all":
+        return VoiceToolPolicy()
+    toolsets = tuple(t.strip() for t in raw.split(",") if t.strip()) or DEFAULT_VOICE_TOOLSETS
+    return VoiceToolPolicy(enabled_toolsets=toolsets)
 
 
 def resolve_voice_tool_policy(
@@ -93,30 +103,27 @@ def apply_voice_tool_policy_to_agent(agent: Any, policy: VoiceToolPolicy) -> Non
     """Apply voice runtime limits (tokens, iterations, system prompt) and ensure concrete tools are available."""
     import model_tools
 
-    # If specific toolsets were configured on the policy, apply them
+    # Keep only the agent's own tools whose toolset is allowed (MCP and plugin tools included). Filtering, not
+    # rebuilding: a rebuild from the static registry would drop MCP tools such as ClickUp and Onyx.
     if policy.enabled_toolsets is not None:
-        toolsets = [str(t).strip() for t in policy.enabled_toolsets if str(t).strip()]
-        defs: list[dict[str, Any]] = []
-        if toolsets:
-            try:
-                defs = list(
-                    model_tools.get_tool_definitions(
-                        enabled_toolsets=toolsets,
-                        quiet_mode=True,
-                    )
-                )
-            except Exception:
-                logger.exception("Voice policy failed loading toolsets=%s", toolsets)
-                defs = []
+        allowed = {str(t).strip() for t in policy.enabled_toolsets if str(t).strip()}
+        name = lambda d: str((d.get("function") or {}).get("name") or "")
+        candidates = {name(d): d for d in (agent.tools or []) if name(d)}
+        try:  # tools hidden behind tool search are not in agent.tools: take the concrete definitions too
+            for d in model_tools.get_tool_definitions(enabled_toolsets=agent.enabled_toolsets, quiet_mode=True,
+                                                      skip_tool_search_assembly=True):
+                candidates.setdefault(name(d), d)
+        except Exception:
+            logger.debug("Voice policy could not load concrete tool definitions", exc_info=True)
+        kept = [d for n, d in candidates.items() if (model_tools.get_toolset_for_tool(n) or "") in allowed]
         if policy.effective_tools:
-            defs = [d for d in defs if (d.get("function") or {}).get("name") in policy.effective_tools]
-        agent.tools = defs
-        agent.valid_tool_names = {
-            str((d.get("function") or {}).get("name"))
-            for d in defs
-            if (d.get("function") or {}).get("name")
-        }
-        agent.enabled_toolsets = toolsets
+            kept = [d for d in kept if name(d) in policy.effective_tools]
+        if kept:
+            agent.tools = kept
+            agent.valid_tool_names = {name(d) for d in kept if name(d)}
+        else:  # unknown toolset names on this host: keep every tool rather than leave voice without any
+            logger.warning("Voice policy toolsets %s matched no tool; keeping all %d tools", sorted(allowed),
+                           len(agent.tools or []))
     else:
         # Default voice policy: augment agent.tools with concrete raw tool definitions
         # (Google Calendar, Docs, Sheets, Drive, ClickUp, etc.) so voice turns don't require
