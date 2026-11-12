@@ -150,8 +150,8 @@ def apply_voice_tool_policy_to_agent(agent: Any, policy: VoiceToolPolicy) -> Non
             logger.debug("Unable to set agent.max_tokens for voice policy", exc_info=True)
 
     suffix = (policy.ephemeral_suffix or "").strip()
-    if suffix:
-        existing = (getattr(agent, "ephemeral_system_prompt", None) or "").strip()
+    existing = (getattr(agent, "ephemeral_system_prompt", None) or "").strip()
+    if suffix and suffix not in existing:  # a cached agent gets the policy again on every voice turn
         agent.ephemeral_system_prompt = (
             f"{existing}\n\n{suffix}".strip() if existing else suffix
         )

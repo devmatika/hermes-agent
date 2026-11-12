@@ -1,17 +1,32 @@
-"""Auto-STT should include AUDIO + audio documents (e.g. Telegram .m4a), not only VOICE."""
+"""Auto-STT should include AUDIO + audio documents (e.g. Telegram .m4a), not only VOICE — on Telegram only."""
 
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.session import SessionSource
 from gateway.run import _event_media_is_stt_input
 from gateway.run_inbound import GatewayInboundMixin
 
 
-def _event(message_type, path, mime=""):
+def _event(message_type, path, mime="", platform=Platform.TELEGRAM):
     return MessageEvent(
         text="",
         message_type=message_type,
         media_urls=[path],
         media_types=[mime] if mime is not None else [],
+        source=SessionSource(platform=platform, chat_id="1"),
     )
+
+
+def test_audio_file_off_telegram_stays_out_of_stt():
+    """Elsewhere (e.g. the relay) an audio upload is music: upstream's rule."""
+    ev = _event(MessageType.AUDIO, "/tmp/cache/song.mp3", "audio/mpeg", platform=Platform.SLACK)
+    assert _event_media_is_stt_input(ev, 0) is False
+
+
+def test_audio_quoted_from_a_reply_stays_out_of_stt():
+    ev = _event(MessageType.AUDIO, "/tmp/cache/voice.ogg", "audio/ogg")
+    ev.media_from_reply = True
+    assert _event_media_is_stt_input(ev, 0) is False
 
 
 def test_voice_note_is_stt_input():
