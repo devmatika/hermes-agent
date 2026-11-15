@@ -61,6 +61,21 @@ def media_delivery_trust_recent() -> bool:
     return os.environ.get(_FLAG_ENVS[1][1], "1").strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def media_delivery_profile_isolation() -> bool:
+    """``gateway.profile_isolation`` of the profile whose turn delivers (the routed profile under
+    multiplex, else the launch profile). Off by default: Hermes profiles share one owner, so a
+    profile may deliver another's plain files. A deployment whose profiles belong to different
+    people turns it on so delivery never reaches into another profile's home. Config only."""
+    cfg = _routed_gateway_cfg()
+    if cfg is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg = load_config_readonly().get("gateway")
+        except Exception:
+            cfg = {}
+    return bool(cfg.get("profile_isolation", False)) if isinstance(cfg, dict) else False
+
+
 def media_delivery_trust_recent_seconds() -> str:
     """Raw recency window (``""`` = validator default); the caller parses/floors it."""
     cfg = _routed_gateway_cfg()

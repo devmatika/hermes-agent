@@ -920,6 +920,22 @@ def _path_is_within(path: Path, root: Path) -> bool:
     return False
 
 
+def _in_foreign_profile_home(resolved: Path) -> bool:
+    """Under ``gateway.profile_isolation``: whether ``resolved`` lies in a Hermes home other than
+    the delivering turn's own — another ``<root>/profiles/<name>``, or the root home itself when a
+    named profile delivers. The root home's own turn still owns ``<root>`` minus ``profiles/``.
+    Every profile's cache counts as foreign too, so the cache allowlist cannot reach across."""
+    root = _resolve_path(_HERMES_ROOT, expand=True)
+    active = _resolve_path(get_hermes_home(), expand=True)
+    if root is None or active is None:
+        return True
+    if active != root and _path_is_within(resolved, active):
+        return False
+    if active == root and not _path_is_within(resolved, root / "profiles"):
+        return False
+    return _path_is_within(resolved, root)
+
+
 def _tenv(name: str, default: str = "") -> str:
     """Scope-aware TERMINAL_* read: the per-turn scope carries the ACTIVE profile's settings while
     os.getenv reads whatever a prior turn pinned into the process env. Only ImportError falls
@@ -1071,6 +1087,9 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     if resolved is None:
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
+        return None
+    from gateway.media_policy import media_delivery_profile_isolation
+    if media_delivery_profile_isolation() and _in_foreign_profile_home(resolved):
         return None
     # Cache / operator allowlist is trusted unconditionally, regardless of mode.
     for root in _media_delivery_allowed_roots():
